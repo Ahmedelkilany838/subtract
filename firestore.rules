@@ -1,0 +1,122 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: userId (Firebase Auth UID)
+    // Fields:
+    //   - displayName: string (optional)
+    //   - email: string (required, email format)
+    //   - photoURL: string (optional, URL format)
+    //   - budgetGoal: number (optional, positive)
+    //   - displayCurrency: string (optional, e.g., USD)
+    //   - role: string (required, 'user' or 'admin')
+    //
+    // Collection: subscriptions
+    // Document ID: subscriptionId (Auto-generated)
+    // Fields:
+    //   - serviceName: string (required, 1-100 chars)
+    //   - amount: number (required, positive)
+    //   - currency: string (required, 3 chars)
+    //   - billingCycle: string (required, 'monthly' or 'yearly')
+    //   - category: string (required, 1-50 chars)
+    //   - nextBillingDate: string (optional, ISO 8601)
+    //   - planName: string (optional, 1-100 chars)
+    //   - domain: string (optional, URL format)
+    //   - slug: string (optional)
+    //   - color: string (optional, hex color)
+    //   - uid: string (required, matches owner UID)
+    //   - createdAt: timestamp (required)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && 
+             ((request.auth.token.email == "agodaaa0@gmail.com" && request.auth.token.email_verified == true) || 
+              (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+               get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'));
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isValidUrl(url) {
+      return url is string && (url.matches("^https://.*") || url.matches("^http://.*"));
+    }
+
+    function isValidDateString(dateStr) {
+      return dateStr is string && dateStr.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return data.keys().hasOnly(['displayName', 'email', 'photoURL', 'budgetGoal', 'displayCurrency', 'role', 'createdAt']) &&
+             data.email is string && isValidEmail(data.email) &&
+             data.role in ['user', 'admin'] &&
+             (!('budgetGoal' in data) || (data.budgetGoal is number && data.budgetGoal >= 0)) &&
+             (!('photoURL' in data) || isValidUrl(data.photoURL));
+    }
+
+    function isValidSubscription(data) {
+      return data.keys().hasAll(['serviceId', 'serviceName', 'amount', 'currency', 'billingCycle', 'category', 'uid', 'createdAt']) &&
+             data.keys().hasOnly(['serviceId', 'serviceName', 'amount', 'currency', 'billingCycle', 'category', 'nextBillingDate', 'planName', 'domain', 'slug', 'color', 'uid', 'createdAt']) &&
+             data.serviceId is string &&
+             data.serviceName is string && data.serviceName.size() > 0 && data.serviceName.size() <= 100 &&
+             data.amount is number && data.amount >= 0 &&
+             data.currency is string && data.currency.size() == 3 &&
+             data.billingCycle in ['monthly', 'yearly'] &&
+             data.category is string && data.category.size() > 0 && data.category.size() <= 50 &&
+             data.uid == request.auth.uid &&
+             (!('nextBillingDate' in data) || isValidDateString(data.nextBillingDate)) &&
+             (!('planName' in data) || data.planName is string) &&
+             (!('domain' in data) || data.domain is string) &&
+             (!('slug' in data) || data.slug is string) &&
+             (!('color' in data) || data.color is string);
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      allow create: if isAuthenticated() && isValidUser(request.resource.data) && 
+                    ((request.auth.uid == userId && request.resource.data.role == 'user') || isAdmin());
+      allow update: if isAuthenticated() && isValidUser(request.resource.data) && 
+                    ((request.auth.uid == userId && request.resource.data.role == resource.data.role) || isAdmin());
+    }
+
+    match /subscriptions/{subscriptionId} {
+      allow read: if isAuthenticated() && (resource.data.uid == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && isValidSubscription(request.resource.data);
+      allow update: if isAuthenticated() && resource.data.uid == request.auth.uid && isValidSubscription(request.resource.data) &&
+                    request.resource.data.uid == resource.data.uid &&
+                    request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if isAuthenticated() && (resource.data.uid == request.auth.uid || isAdmin());
+    }
+
+    match /{path=**} {
+      allow read, write: if false;
+    }
+  }
+}

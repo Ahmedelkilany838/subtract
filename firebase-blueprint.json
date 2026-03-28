@@ -1,0 +1,49 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "User profile information",
+      "type": "object",
+      "properties": {
+        "displayName": { "type": "string", "description": "User's display name" },
+        "email": { "type": "string", "format": "email", "description": "User's email address" },
+        "photoURL": { "type": "string", "format": "uri", "description": "User's profile photo URL" },
+        "budgetGoal": { "type": "number", "description": "User's monthly budget goal" },
+        "displayCurrency": { "type": "string", "description": "User's preferred currency" },
+        "role": { "type": "string", "enum": ["user", "admin"], "description": "User's role" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Account creation timestamp" }
+      },
+      "required": ["email", "role"]
+    },
+    "Subscription": {
+      "title": "Subscription",
+      "description": "Subscription details",
+      "type": "object",
+      "properties": {
+        "serviceName": { "type": "string", "description": "Name of the subscription service" },
+        "amount": { "type": "number", "description": "Subscription cost" },
+        "currency": { "type": "string", "description": "Currency of the cost" },
+        "billingCycle": { "type": "string", "enum": ["monthly", "yearly"], "description": "Billing frequency" },
+        "category": { "type": "string", "description": "Subscription category" },
+        "nextBillingDate": { "type": "string", "format": "date-time", "description": "Next billing date" },
+        "planName": { "type": "string", "description": "Name of the plan" },
+        "domain": { "type": "string", "format": "uri", "description": "Service domain" },
+        "slug": { "type": "string", "description": "Service slug" },
+        "color": { "type": "string", "description": "Service theme color" },
+        "uid": { "type": "string", "description": "Owner user ID" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" }
+      },
+      "required": ["serviceName", "amount", "currency", "billingCycle", "category", "uid", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profile collection"
+    },
+    "/subscriptions/{subscriptionId}": {
+      "schema": "Subscription",
+      "description": "Subscriptions collection"
+    }
+  }
+}
