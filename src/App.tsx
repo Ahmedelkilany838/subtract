@@ -31,7 +31,15 @@ import {
   AlertCircle,
   Target,
   Sun,
-  Moon
+  Moon,
+  StickyNote,
+  Archive,
+  ArchiveRestore,
+  Facebook,
+  Instagram,
+  Linkedin,
+  Coins,
+  Wallet
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format, parseISO } from 'date-fns';
@@ -50,7 +58,11 @@ import {
   Bar,
   XAxis,
   YAxis,
-  CartesianGrid
+  CartesianGrid,
+  AreaChart,
+  Area,
+  LineChart,
+  Line
 } from 'recharts';
 
 import { 
@@ -102,6 +114,19 @@ import { GLOBAL_SERVICES, getLogoUrl, getFallbackLogoUrl, Service } from '@/src/
 import { CURRENCIES, getExchangeRates } from '@/src/lib/currencies';
 import { cn } from '@/lib/utils';
 
+export const BrandLogo = ({ className }: { className?: string }) => (
+  <svg viewBox="0 0 100 100" className={className} xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="brandGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stopColor="#3b82f6" />
+        <stop offset="100%" stopColor="#1d4ed8" />
+      </linearGradient>
+    </defs>
+    <rect width="100" height="100" rx="30" fill="url(#brandGrad)" />
+    <rect x="25" y="43" width="50" height="14" rx="7" fill="#ffffff" />
+  </svg>
+);
+
 interface Subscription {
   id: string;
   serviceId: string;
@@ -115,6 +140,8 @@ interface Subscription {
   nextBillingDate?: string;
   category: string;
   color?: string;
+  notes?: string;
+  isArchived?: boolean;
   uid: string;
   createdAt: any;
 }
@@ -126,6 +153,7 @@ const subscriptionSchema = z.object({
   }),
   currency: z.string().min(1, 'Currency is required'),
   billingCycle: z.enum(['monthly', 'yearly']),
+  notes: z.string().optional(),
 });
 
 type SubscriptionFormValues = z.infer<typeof subscriptionSchema>;
@@ -440,10 +468,47 @@ function CalendarView({
   const firstDay   = new Date(year, month, 1).getDay(); // 0=Sun
   const daysInMonth = new Date(year, month + 1, 0).getDate();
 
+  const currentYear = today.getFullYear();
+  const currentMonth = today.getMonth();
+
+  // Filter subscriptions valid for the current view Date
+  const validSubscriptions = useMemo(() => {
+    // Future months are empty (as per user request)
+    if (year > currentYear || (year === currentYear && month > currentMonth)) {
+      return [];
+    }
+    
+    return subscriptions.filter(sub => {
+      let createdDate: Date | null = null;
+      if (sub.createdAt?.toDate) {
+        createdDate = sub.createdAt.toDate();
+      } else if (sub.createdAt) {
+        createdDate = new Date(sub.createdAt);
+      } else {
+        return true; // Fallback if no creation date
+      }
+
+      const createdYear = createdDate.getFullYear();
+      const createdMonth = createdDate.getMonth();
+
+      // Skip if viewed month is before the subscription was created
+      if (year < createdYear || (year === createdYear && month < createdMonth)) {
+        return false;
+      }
+
+      // Yearly subscriptions only bill in their specific creation month
+      if (sub.billingCycle === 'yearly' && month !== createdMonth) {
+        return false;
+      }
+
+      return true;
+    });
+  }, [subscriptions, year, month, currentYear, currentMonth]);
+
   // Build a map: day → subscriptions that bill on that day
   const dayMap = useMemo(() => {
     const map: Record<number, Subscription[]> = {};
-    subscriptions.forEach(sub => {
+    validSubscriptions.forEach(sub => {
       // Use createdAt as a proxy for billing day (day-of-month)
       let billingDay: number | null = null;
       if (sub.createdAt?.toDate) {
@@ -457,13 +522,12 @@ function CalendarView({
       }
     });
     return map;
-  }, [subscriptions, daysInMonth]);
+  }, [validSubscriptions, daysInMonth]);
 
-  const totalThisMonth = subscriptions.reduce((sum, sub) => {
-    const monthly = sub.billingCycle === 'yearly'
-      ? convertToDisplay(sub.amount, sub.currency) / 12
-      : convertToDisplay(sub.amount, sub.currency);
-    return sum + monthly;
+  const totalThisMonth = validSubscriptions.reduce((sum, sub) => {
+    // Actual amount billed this month (for calendar view, we use full amount of yearly since it only appears in its billing month)
+    const amount = convertToDisplay(sub.amount, sub.currency);
+    return sum + amount;
   }, 0);
 
   const currencySymbol = displayCurrency === 'USD' ? '$' : displayCurrency === 'EUR' ? '€' : displayCurrency === 'GBP' ? '£' : displayCurrency;
@@ -491,7 +555,7 @@ function CalendarView({
         <div>
           <h2 className="text-2xl font-medium text-foreground tracking-tight">{monthName} {year}</h2>
           <p className="text-muted-foreground text-xs mt-1">
-            {subscriptions.length} subscriptions · {currencySymbol}{Math.round(totalThisMonth)}/mo
+            {validSubscriptions.length} subscriptions · {currencySymbol}{Math.round(totalThisMonth)}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -592,7 +656,7 @@ function CalendarView({
       </div>
 
       {/* Monthly Summary Strip */}
-      {subscriptions.length > 0 && (
+      {validSubscriptions.length > 0 && (
         <motion.div
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
@@ -602,10 +666,8 @@ function CalendarView({
           <div className="text-[10px] text-muted-foreground uppercase tracking-widest font-medium self-center mr-2">
             This month
           </div>
-          {subscriptions.map(sub => {
-            const monthly = sub.billingCycle === 'yearly'
-              ? convertToDisplay(sub.amount, sub.currency) / 12
-              : convertToDisplay(sub.amount, sub.currency);
+          {validSubscriptions.map(sub => {
+            const billedAmount = convertToDisplay(sub.amount, sub.currency);
             return (
               <div key={sub.id} className="flex items-center gap-2 bg-muted rounded-lg px-3 py-2">
                 <div className="w-5 h-5 rounded-md overflow-hidden shrink-0">
@@ -619,7 +681,7 @@ function CalendarView({
                 </div>
                 <span className="text-xs font-medium text-foreground">{sub.serviceName}</span>
                 <span className="text-[10px] text-muted-foreground tabular-nums">
-                  {currencySymbol}{Math.round(monthly)}
+                  {currencySymbol}{Math.round(billedAmount)}
                 </span>
               </div>
             );
@@ -631,25 +693,70 @@ function CalendarView({
 }
 
 // ─── Loading Screen ───────────────────────────────────────────────────────────
-function LoadingScreen() {
-  const [showSlow, setShowSlow] = useState(false);
+const LOADING_PHRASES = [
+  "Authenticating secure session",
+  "Fetching active subscriptions",
+  "Evaluating currency variations",
+  "Preparing your workspace"
+];
+
+function LoadingScreen({ onComplete }: { onComplete?: () => void }) {
+  const [phraseIndex, setPhraseIndex] = useState(0);
+  const onCompleteRef = React.useRef(onComplete);
+
   useEffect(() => {
-    const t = setTimeout(() => setShowSlow(true), 3000);
-    return () => clearTimeout(t);
+    onCompleteRef.current = onComplete;
+  }, [onComplete]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setPhraseIndex(prev => {
+        const next = prev + 1;
+        if (next >= LOADING_PHRASES.length) {
+          clearInterval(interval);
+          if (onCompleteRef.current) onCompleteRef.current();
+          return prev;
+        }
+        return next;
+      });
+    }, 1400);
+    return () => clearInterval(interval);
   }, []);
+
   return (
-    <div className="min-h-screen bg-background flex items-center justify-center">
-      <div className="flex flex-col items-center gap-6">
-        <div className="w-14 h-14 border-[3px] border-primary/20 border-t-primary rounded-full animate-spin" />
-        <div className="flex flex-col items-center gap-2">
-          <p className="text-muted-foreground text-[10px] uppercase tracking-[0.3em] font-black">
-            Initializing Secure Session
+    <div className="min-h-screen bg-background relative overflow-hidden flex flex-col items-center justify-center p-6 font-sans">
+      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full h-full pointer-events-none">
+        <div className="absolute top-[-20%] left-[-10%] w-[70%] h-[70%] bg-blue-500/10 blur-[120px] rounded-full dark:mix-blend-screen" />
+        <div className="absolute bottom-[-20%] right-[-10%] w-[60%] h-[60%] bg-indigo-500/10 blur-[120px] rounded-full dark:mix-blend-screen" />
+        <div className="absolute top-[40%] left-[50%] -translate-x-1/2 -translate-y-1/2 w-[80%] h-[80%] bg-[radial-gradient(ellipse_at_center,rgba(59,130,246,0.08)_0%,transparent_70%)] blur-[100px]" />
+      </div>
+
+      <div className="relative z-10 flex flex-col items-center gap-12">
+        <div className="relative flex items-center justify-center mb-4">
+          <BrandLogo className="w-16 h-16 shadow-xl relative z-10" />
+          <div className="absolute -inset-3 border-[1.5px] border-border/40 border-t-primary/30 rounded-full animate-spin [animation-duration:2s]" />
+          <div className="absolute -inset-6 border-[1px] border-border/20 border-b-primary/20 rounded-full animate-spin [animation-duration:3.5s]" style={{ animationDirection: 'reverse' }} />
+        </div>
+
+        <div className="flex flex-col items-center gap-4">
+          <div className="h-6 relative overflow-visible flex items-center justify-center w-[300px]">
+            <AnimatePresence mode="wait">
+              <motion.p
+                key={phraseIndex}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.4, ease: "easeOut" }}
+                className="text-muted-foreground text-sm font-medium tracking-tight absolute text-center w-full"
+              >
+                {LOADING_PHRASES[phraseIndex]}
+              </motion.p>
+            </AnimatePresence>
+          </div>
+          
+          <p className="text-muted-foreground/50 text-[10px] uppercase tracking-[0.4em] font-bold mt-2">
+            Subtract &bull; Workspace
           </p>
-          {showSlow && (
-            <p className="text-muted-foreground/50 text-[10px] text-center max-w-[200px] leading-relaxed">
-              Taking longer than usual — check your connection
-            </p>
-          )}
         </div>
       </div>
     </div>
@@ -665,11 +772,17 @@ export default function App() {
 function AppContent() {
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [authReady, setAuthReady] = useState(false);
-  const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
+  const [minLoadingDone, setMinLoadingDone] = useState(false);
+  const [allSubscriptions, setAllSubscriptions] = useState<Subscription[]>([]);
+  const [isEditingCap, setIsEditingCap] = useState(false);
+  const [tempBudget, setTempBudget] = useState(500);
+  const subscriptions = useMemo(() => allSubscriptions.filter(s => !s.isArchived), [allSubscriptions]);
+  const archivedSubscriptions = useMemo(() => allSubscriptions.filter(s => !!s.isArchived), [allSubscriptions]);
   const [displayCurrency, setDisplayCurrency] = useState('USD');
   const [exchangeRates, setExchangeRates] = useState<Record<string, number>>({});
   const [isAddingInline, setIsAddingInline] = useState(false);
-  const [activeView, setActiveView] = useState<'list' | 'dashboard' | 'calendar'>('list');
+  const [showNotesField, setShowNotesField] = useState(false);
+  const [activeView, setActiveView] = useState<'list' | 'dashboard' | 'calendar' | 'archive'>('list');
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     if (typeof window !== 'undefined') {
       return localStorage.getItem('theme') as 'light' | 'dark' || 'dark';
@@ -710,6 +823,7 @@ function AppContent() {
           if (userDoc.exists()) {
             const data = userDoc.data();
             setBudgetGoal(data.budgetGoal || 500);
+            setTempBudget(data.budgetGoal || 500);
             setDisplayCurrency(data.displayCurrency || 'USD');
           } else {
             // Initialize user doc (fire-and-forget, don't block auth)
@@ -745,7 +859,7 @@ function AppContent() {
   // Firestore Subscriptions Listener
   useEffect(() => {
     if (!user || !authReady) {
-      setSubscriptions([]);
+      setAllSubscriptions([]);
       return;
     }
 
@@ -755,7 +869,7 @@ function AppContent() {
         id: doc.id,
         ...doc.data()
       })) as Subscription[];
-      setSubscriptions(subs.sort((a, b) => {
+      setAllSubscriptions(subs.sort((a, b) => {
         const dateA = a.createdAt?.seconds || 0;
         const dateB = b.createdAt?.seconds || 0;
         return dateB - dateA;
@@ -835,6 +949,7 @@ function AppContent() {
       amount: '',
       currency: 'USD',
       billingCycle: 'monthly',
+      notes: '',
     },
   });
 
@@ -853,10 +968,11 @@ function AppContent() {
     if (editingSub) {
       const service = GLOBAL_SERVICES.find(s => s.id === editingSub.serviceId);
       setSelectedService(service || null);
-      setValue('planName', editingSub.planName);
+      setValue('planName', editingSub.planName || '');
       setValue('amount', editingSub.amount.toString());
       setValue('currency', editingSub.currency);
       setValue('billingCycle', editingSub.billingCycle);
+      setValue('notes', editingSub.notes || '');
     }
   }, [editingSub, setValue]);
 
@@ -893,12 +1009,138 @@ function AppContent() {
     return Object.entries(totals).map(([name, value]) => ({ name, value }));
   }, [subscriptions, exchangeRates, displayCurrency]);
 
+  const dailyProjectionData = useMemo(() => {
+    const days = 30;
+    const data = [];
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    for (let i = 0; i < days; i++) {
+        const d = new Date(today);
+        d.setDate(today.getDate() + i);
+        
+        const renewals = subscriptions.filter(s => {
+            if (!s.nextBillingDate) return false;
+            const nb = parseISO(s.nextBillingDate);
+            return nb.getDate() === d.getDate() && nb.getMonth() === d.getMonth();
+        });
+
+        const cost = renewals.reduce((sum, s) => sum + convertToDisplay(s.amount, s.currency), 0);
+        data.push({
+            date: format(d, 'MMM dd'),
+            amount: Math.round(cost),
+            count: renewals.length
+        });
+    }
+    return data;
+  }, [subscriptions, exchangeRates, displayCurrency]);
+
+  const savingsInsights = useMemo(() => {
+    return subscriptions
+      .filter(s => s.billingCycle === 'monthly')
+      .map(s => {
+        const monthlyAmount = convertToDisplay(s.amount, s.currency);
+        // Estimate 20% average saving for switching to yearly
+        const potentialSaving = (monthlyAmount * 12) * 0.2;
+        return {
+          ...s,
+          potentialSaving
+        };
+      })
+      .sort((a, b) => b.potentialSaving - a.potentialSaving)
+      .slice(0, 3);
+  }, [subscriptions, exchangeRates, displayCurrency]);
+
+  const financialHealthScore = useMemo(() => {
+    if (budgetGoal <= 0) return 0;
+    const ratio = stats.monthly / budgetGoal;
+    return Math.max(0, Math.min(100, Math.round((1 - ratio) * 100)));
+  }, [stats.monthly, budgetGoal]);
+
   const COLORS = ['#3b82f6', '#8b5cf6', '#ec4899', '#f43f5e', '#f59e0b', '#10b981', '#06b6d4'];
 
   const filteredSubscriptions = useMemo(() => {
     if (selectedCategory === 'All') return subscriptions;
     return subscriptions.filter(sub => sub.category === selectedCategory);
   }, [subscriptions, selectedCategory]);
+
+  const alerts = useMemo(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const upcoming: {
+      sub: Subscription;
+      days: number;
+      type: 'urgent' | 'warning' | 'notice';
+      colorClass: string;
+      dotClass: string;
+      pingClass: string;
+    }[] = [];
+
+    subscriptions.forEach(sub => {
+      let createdDate: Date | null = null;
+      if (sub.createdAt?.toDate) {
+        createdDate = sub.createdAt.toDate();
+      } else if (sub.createdAt) {
+        createdDate = new Date(sub.createdAt);
+      }
+      
+      if (!createdDate) return;
+      createdDate.setHours(0, 0, 0, 0);
+
+      const nextBillingDate = new Date(createdDate.getTime());
+      
+      if (sub.billingCycle === 'monthly') {
+        while (nextBillingDate < today) {
+          nextBillingDate.setMonth(nextBillingDate.getMonth() + 1);
+        }
+      } else {
+        while (nextBillingDate < today) {
+          nextBillingDate.setFullYear(nextBillingDate.getFullYear() + 1);
+        }
+      }
+
+      // Ignore if they just subscribed today
+      if (nextBillingDate.getTime() === today.getTime() && createdDate.getTime() === today.getTime()) {
+        if (sub.billingCycle === 'monthly') {
+          nextBillingDate.setMonth(nextBillingDate.getMonth() + 1);
+        } else {
+          nextBillingDate.setFullYear(nextBillingDate.getFullYear() + 1);
+        }
+      }
+
+      const diffTime = nextBillingDate.getTime() - today.getTime();
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+      if (diffDays >= 0 && diffDays <= 7) {
+        let type: 'urgent' | 'warning' | 'notice';
+        let colorClass = '';
+        let dotClass = '';
+        let pingClass = '';
+
+        if (diffDays === 0) {
+          type = 'urgent';
+          colorClass = 'bg-red-500/10 text-red-500';
+          dotClass = 'bg-red-500';
+          pingClass = 'bg-red-400';
+        } else if (diffDays <= 3) {
+          type = 'warning';
+          colorClass = 'bg-amber-500/10 text-amber-500 dark:bg-amber-400/10 dark:text-amber-400';
+          dotClass = 'bg-amber-500';
+          pingClass = 'bg-amber-400';
+        } else {
+          type = 'notice';
+          colorClass = 'bg-blue-500/10 text-blue-500 dark:bg-blue-400/10 dark:text-blue-400';
+          dotClass = 'bg-blue-500';
+          pingClass = 'bg-blue-400';
+        }
+
+        upcoming.push({ sub, days: diffDays, type, colorClass, dotClass, pingClass });
+      }
+    });
+
+    return upcoming.sort((a, b) => a.days - b.days);
+  }, [subscriptions]);
 
   const onSubmit = async (data: SubscriptionFormValues) => {
     if (!selectedService || !user) return;
@@ -909,6 +1151,7 @@ function AppContent() {
         amount: parseFloat(data.amount),
         currency: data.currency,
         billingCycle: data.billingCycle,
+        notes: data.notes || '',
       };
       try {
         await updateDoc(doc(db, 'subscriptions', editingSub.id), updates);
@@ -927,6 +1170,7 @@ function AppContent() {
         billingCycle: data.billingCycle,
         category: selectedService.category,
         color: selectedService.color,
+        notes: data.notes || '',
         uid: user.uid,
         createdAt: serverTimestamp()
       };
@@ -938,6 +1182,7 @@ function AppContent() {
     }
 
     setIsAddingInline(false);
+    setShowNotesField(false);
     setEditingSub(null);
     setSelectedService(null);
     reset();
@@ -946,6 +1191,7 @@ function AppContent() {
   const handleEdit = (sub: Subscription) => {
     setEditingSub(sub);
     setIsAddingInline(true);
+    setShowNotesField(!!sub.notes);
     // Scroll to top to see the inline form
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -955,6 +1201,22 @@ function AppContent() {
       await deleteDoc(doc(db, 'subscriptions', id));
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, `subscriptions/${id}`);
+    }
+  };
+
+  const archiveSubscription = async (id: string) => {
+    try {
+      await updateDoc(doc(db, 'subscriptions', id), { isArchived: true });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `subscriptions/${id}`);
+    }
+  };
+
+  const restoreSubscription = async (id: string) => {
+    try {
+      await updateDoc(doc(db, 'subscriptions', id), { isArchived: false });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `subscriptions/${id}`);
     }
   };
 
@@ -968,13 +1230,20 @@ function AppContent() {
 
   const currencySymbol = CURRENCIES.find(c => c.code === displayCurrency)?.symbol || displayCurrency;
 
-  if (!authReady) {
-    return <LoadingScreen />;
-  }
+  const isInitializing = !authReady || !minLoadingDone;
 
-  if (!user) {
-    return (
-      <div className="min-h-screen bg-background relative overflow-hidden flex flex-col items-center justify-center p-6 font-sans">
+  let content;
+
+  if (isInitializing) {
+    content = (
+      <motion.div key="loader" exit={{ opacity: 0, filter: "blur(5px)", scale: 0.98 }} transition={{ duration: 0.7, ease: "easeInOut" }}>
+        <LoadingScreen onComplete={() => setMinLoadingDone(true)} />
+      </motion.div>
+    );
+  } else if (!user) {
+    content = (
+      <motion.div key="login" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.8, ease: "easeOut" }}>
+        <div className="min-h-screen bg-background relative overflow-hidden flex flex-col items-center justify-center p-6 font-sans">
         {/* Background Effects */}
         <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full h-full pointer-events-none">
           <div className="absolute top-[-20%] left-[-10%] w-[70%] h-[70%] bg-blue-500/10 blur-[120px] rounded-full dark:mix-blend-screen" />
@@ -988,9 +1257,7 @@ function AppContent() {
           transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
           className="bg-card border border-border p-8 md:p-12 rounded-xl max-w-md w-full text-center relative z-10"
         >
-          <div className="w-12 h-12 bg-muted rounded-xl flex items-center justify-center mx-auto mb-8 border border-border relative group">
-            <Zap className="w-5 h-5 text-foreground relative z-10" />
-          </div>
+          <BrandLogo className="w-14 h-14 mx-auto mb-8 shadow-lg shadow-blue-500/10 relative group" />
           
           <h1 className="text-2xl md:text-3xl font-medium text-foreground mb-3 tracking-tight">
             Subtract <span className="text-foreground/50">Pro</span>
@@ -1080,68 +1347,173 @@ function AppContent() {
             <span className="hover:text-foreground/80 cursor-pointer transition-colors">Status</span>
           </div>
         </div>
-      </div>
+        </div>
+      </motion.div>
     );
-  }
+  } else {
+    content = (
+      <motion.div key="dashboard" initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.5, ease: "easeOut" }} className="h-screen w-full flex bg-background text-foreground font-sans selection:bg-blue-500/30 overflow-hidden relative">
+        {/* Soft Ambient Blue Light */}
+        <div className="fixed inset-0 pointer-events-none flex justify-center z-0">
+          <div className="absolute -top-[20%] w-[70%] h-[50%] bg-blue-500/10 blur-[120px] rounded-full dark:mix-blend-screen" />
+          <div className="absolute top-[20%] -left-[10%] w-[40%] h-[40%] bg-indigo-500/5 blur-[120px] rounded-full dark:mix-blend-screen" />
+          <div className="absolute bottom-[10%] -right-[10%] w-[50%] h-[50%] bg-blue-400/5 blur-[120px] rounded-full dark:mix-blend-screen" />
+        </div>
+        <div className="fixed inset-0 pointer-events-none z-0 bg-[linear-gradient(to_right,var(--grid-color)_1px,transparent_1px),linear-gradient(to_bottom,var(--grid-color)_1px,transparent_1px)] bg-[size:40px_40px] [mask-image:radial-gradient(ellipse_80%_50%_at_50%_0%,#000_70%,transparent_100%)]" />
 
-  return (
-    <div className="min-h-screen bg-background text-foreground font-sans selection:bg-blue-500/30 selection:text-foreground relative overflow-x-hidden">
-      {/* Soft Ambient Blue Light */}
-      <div className="fixed inset-0 pointer-events-none flex justify-center z-0">
-        <div className="absolute -top-[20%] w-[70%] h-[50%] bg-blue-500/10 blur-[120px] rounded-full dark:mix-blend-screen" />
-        <div className="absolute top-[20%] -left-[10%] w-[40%] h-[40%] bg-indigo-500/5 blur-[120px] rounded-full dark:mix-blend-screen" />
-        <div className="absolute bottom-[10%] -right-[10%] w-[50%] h-[50%] bg-blue-400/5 blur-[120px] rounded-full dark:mix-blend-screen" />
-      </div>
-
-      {/* Subtle Grid Background */}
-      <div className="fixed inset-0 pointer-events-none z-0 bg-[linear-gradient(to_right,var(--grid-color)_1px,transparent_1px),linear-gradient(to_bottom,var(--grid-color)_1px,transparent_1px)] bg-[size:40px_40px] [mask-image:radial-gradient(ellipse_80%_50%_at_50%_0%,#000_70%,transparent_100%)]" />
-
-      {/* Header Navigation */}
-      <nav className="sticky top-0 z-50 w-full border-b border-border bg-background/80 backdrop-blur-xl">
-        <div className="max-w-7xl mx-auto px-4 md:px-8 h-14 flex items-center justify-between">
-          <div className="flex items-center gap-3 group cursor-pointer">
-            <div className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center border border-border transition-all duration-300 group-hover:bg-accent">
-              <Zap className="w-4 h-4 text-foreground" />
-            </div>
-            <div className="hidden sm:block">
-              <h1 className="text-sm font-medium tracking-tight text-foreground leading-none">Subtract</h1>
+        {/* --- LEFT SIDEBAR (Desktop) --- */}
+        <aside className="hidden md:flex flex-col w-[260px] border-r border-border bg-card/10 backdrop-blur-3xl relative z-20 shrink-0">
+          <div className="h-16 flex items-center px-6 border-b border-border/50 shrink-0">
+            <div className="flex items-center gap-3">
+              <BrandLogo className="w-6 h-6 shadow-sm shadow-primary/20" />
+              <h1 className="text-[14px] font-semibold tracking-wide text-foreground tracking-tight">Subtract Pro</h1>
             </div>
           </div>
+          
+          <div className="flex-1 overflow-y-auto py-6 px-4">
+            <p className="text-[10px] font-bold tracking-[0.2em] text-muted-foreground uppercase mb-3 px-2">Menu</p>
+            <nav className="space-y-1 flex flex-col">
+              <button onClick={() => setActiveView('list')} className={cn("flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] font-medium transition-all group", activeView === 'list' ? "bg-primary text-primary-foreground shadow-sm shadow-primary/20" : "text-muted-foreground hover:bg-muted hover:text-foreground")}>
+                <LayoutDashboard className={cn("w-4 h-4 transition-transform group-hover:scale-110", activeView === 'list' ? "text-primary-foreground" : "text-muted-foreground/70")} />
+                List View
+              </button>
+              <button onClick={() => setActiveView('dashboard')} className={cn("flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] font-medium transition-all group", activeView === 'dashboard' ? "bg-primary text-primary-foreground shadow-sm shadow-primary/20" : "text-muted-foreground hover:bg-muted hover:text-foreground")}>
+                <Activity className={cn("w-4 h-4 transition-transform group-hover:scale-110", activeView === 'dashboard' ? "text-primary-foreground" : "text-muted-foreground/70")} />
+                Dashboard
+              </button>
+              <button onClick={() => setActiveView('calendar')} className={cn("flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] font-medium transition-all group", activeView === 'calendar' ? "bg-primary text-primary-foreground shadow-sm shadow-primary/20" : "text-muted-foreground hover:bg-muted hover:text-foreground")}>
+                <Calendar className={cn("w-4 h-4 transition-transform group-hover:scale-110", activeView === 'calendar' ? "text-primary-foreground" : "text-muted-foreground/70")} />
+                Calendar
+              </button>
+            </nav>
+            
+            <p className="text-[10px] font-bold tracking-[0.2em] text-muted-foreground uppercase mt-8 mb-3 px-2">Data</p>
+            <nav className="space-y-1 flex flex-col">
+              <button onClick={() => setActiveView('archive')} className={cn("flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] font-medium transition-all group", activeView === 'archive' ? "bg-primary text-primary-foreground shadow-sm shadow-primary/20" : "text-muted-foreground hover:bg-muted hover:text-foreground")}>
+                <Archive className={cn("w-4 h-4 transition-transform group-hover:scale-110", activeView === 'archive' ? "text-primary-foreground" : "text-muted-foreground/70")} />
+                Archive
+              </button>
+            </nav>
+          </div>
 
-          <div className="flex items-center gap-3 md:gap-6">
-            <div className="flex items-center gap-1 bg-card p-1 rounded-lg border border-border mr-2 md:mr-4">
-              <button
-                onClick={() => setActiveView('list')}
-                className={cn(
-                  "px-3 py-1 rounded-md text-[11px] font-medium transition-all flex items-center gap-2",
-                  activeView === 'list' ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"
-                )}
-              >
-                <LayoutDashboard className="w-3 h-3" />
-                <span className="hidden sm:inline">List</span>
-              </button>
-              <button
-                onClick={() => setActiveView('dashboard')}
-                className={cn(
-                  "px-3 py-1 rounded-md text-[11px] font-medium transition-all flex items-center gap-2",
-                  activeView === 'dashboard' ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"
-                )}
-              >
-                <Activity className="w-3 h-3" />
-                <span className="hidden sm:inline">Dashboard</span>
-              </button>
-              <button
-                onClick={() => setActiveView('calendar')}
-                className={cn(
-                  "px-3 py-1 rounded-md text-[11px] font-medium transition-all flex items-center gap-2",
-                  activeView === 'calendar' ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"
-                )}
-              >
-                <Calendar className="w-3 h-3" />
-                <span className="hidden sm:inline">Calendar</span>
-              </button>
-            </div>
-            <div className="flex items-center gap-2 md:gap-3">
+          <div className="p-4 border-t border-border/50 bg-background/50 shrink-0">
+            <Popover>
+              <PopoverTrigger asChild>
+                <button className="flex items-center gap-3 w-full p-2 rounded-xl hover:bg-accent transition-all cursor-pointer group/user overflow-hidden border border-transparent hover:border-border text-left">
+                  <div className="w-9 h-9 rounded-lg overflow-hidden bg-muted border border-border shrink-0">
+                    <img src={user?.photoURL || ''} alt="" className="w-full h-full object-cover" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[12px] font-medium text-foreground truncate">{user?.displayName}</p>
+                    <p className="text-[10px] text-muted-foreground truncate">{user?.email}</p>
+                  </div>
+                </button>
+              </PopoverTrigger>
+              <PopoverContent className="w-56 bg-popover border-border p-2 rounded-xl shadow-xl ml-4 mb-2" side="right" sideOffset={10}>
+                <Button variant="ghost" onClick={logout} className="w-full justify-start text-rose-500 hover:text-rose-500 hover:bg-rose-500/10 rounded-lg h-9 font-medium text-xs">
+                  <Trash2 className="w-4 h-4 mr-3" />
+                  Sign Out
+                </Button>
+              </PopoverContent>
+            </Popover>
+          </div>
+        </aside>
+
+        {/* --- MAIN CONTENT COLUMN --- */}
+        <div className="flex-1 flex flex-col h-screen overflow-hidden relative z-10 w-full min-w-0">
+          
+          {/* Header */}
+          <header className="h-16 flex items-center justify-between px-4 md:px-8 border-b border-border/50 bg-background/30 backdrop-blur-2xl relative z-20 shrink-0">
+             <div className="flex items-center gap-4">
+               {/* Mobile Logo */}
+               <div className="md:hidden flex items-center gap-3">
+                 <BrandLogo className="w-6 h-6 shadow-sm shadow-primary/20" />
+                 <h1 className="text-[14px] font-semibold tracking-wide tracking-tight text-foreground">Subtract</h1>
+               </div>
+               {/* Page Title */}
+               <h2 className="text-[13px] font-medium tracking-wide tracking-tight text-muted-foreground hidden md:block select-none">
+                 {activeView === 'list' && 'Your Subscriptions'}
+                 {activeView === 'dashboard' && 'Analytics Dashboard'}
+                 {activeView === 'calendar' && 'Upcoming Renewals'}
+                 {activeView === 'archive' && 'Archived Records'}
+               </h2>
+             </div>
+             
+             {/* Right Controls */}
+             <div className="flex items-center gap-3 md:gap-4">
+              <Popover>
+                <PopoverTrigger asChild>
+                  <button className="relative w-8 h-8 rounded-lg bg-card border border-border flex items-center justify-center hover:bg-accent transition-all cursor-pointer text-muted-foreground hover:text-foreground">
+                    <Bell className="w-4 h-4" />
+                    {alerts.length > 0 && (
+                      <span className="absolute -top-1 -right-1 flex h-2.5 w-2.5">
+                        <span className={cn("animate-ping absolute inline-flex h-full w-full rounded-full opacity-75", alerts[0].pingClass)}></span>
+                        <span className={cn("relative inline-flex rounded-full h-2.5 w-2.5 border border-card", alerts[0].dotClass)}></span>
+                      </span>
+                    )}
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent className="w-80 bg-popover border border-border p-0 rounded-xl shadow-2xl z-[100] overflow-hidden" align="end" sideOffset={8}>
+                  <div className="flex items-center justify-between p-4 bg-muted/40 border-b border-border/60">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-7 h-7 rounded-md bg-foreground/5 border border-border/50 flex items-center justify-center">
+                        <Bell className="w-3.5 h-3.5 text-foreground" />
+                      </div>
+                      <span className="font-semibold text-[13px] text-foreground tracking-tight">Upcoming Renewals</span>
+                    </div>
+                    {alerts.length > 0 && (
+                      <Badge className={cn("text-white border-transparent px-1.5 py-0 text-[10px] font-bold", alerts[0].dotClass)}>
+                        {alerts.length}
+                      </Badge>
+                    )}
+                  </div>
+                  
+                  <div className="max-h-[300px] overflow-y-auto">
+                    {alerts.length === 0 ? (
+                      <div className="p-8 text-center flex flex-col items-center gap-3">
+                        <div className="w-10 h-10 rounded-full bg-muted/50 border border-border flex items-center justify-center">
+                          <Check className="w-4 h-4 text-emerald-500" />
+                        </div>
+                        <div>
+                          <p className="text-sm font-medium text-foreground">You're all set!</p>
+                          <p className="text-xs text-muted-foreground mt-0.5">No renewals in the next 7 days.</p>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col">
+                        {alerts.map((alert, i) => (
+                          <div key={i} className="flex items-start gap-3 p-4 border-b border-border/50 last:border-0 hover:bg-muted/20 transition-colors">
+                            <div className="w-8 h-8 rounded-lg overflow-hidden bg-card border border-border shrink-0 flex items-center justify-center p-1.5">
+                              <ServiceLogo 
+                                name={alert.sub.serviceName}
+                                domain={alert.sub.domain}
+                                slug={alert.sub.slug}
+                                color={alert.sub.color}
+                                className="w-full h-full"
+                              />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center justify-between">
+                                <h4 className="text-sm font-semibold text-foreground truncate">{alert.sub.serviceName}</h4>
+                                <span className={cn(
+                                  "text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider",
+                                  alert.colorClass
+                                )}>
+                                  {alert.type === 'urgent' ? 'Today' : `${alert.days} Day${alert.days > 1 ? 's' : ''}`}
+                                </span>
+                              </div>
+                              <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
+                                Your <span className="font-medium text-foreground">{alert.sub.planName}</span> plan renews {alert.type === 'urgent' ? <span className="text-red-500 font-semibold">today</span> : 'for'} <span className="font-medium text-foreground tabular-nums">{displayCurrency === 'USD' ? '$' : displayCurrency === 'EUR' ? '€' : displayCurrency === 'GBP' ? '£' : displayCurrency}{Math.round(convertToDisplay(alert.sub.amount, alert.sub.currency))}</span>.
+                              </p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </PopoverContent>
+              </Popover>
+
               <button
                 onClick={toggleTheme}
                 className="w-8 h-8 rounded-lg bg-card border border-border flex items-center justify-center hover:bg-accent transition-all cursor-pointer text-muted-foreground hover:text-foreground"
@@ -1166,30 +1538,30 @@ function AppContent() {
 
               <Popover>
                 <PopoverTrigger asChild>
-                  <button className="w-8 h-8 rounded-lg bg-card border border-border flex items-center justify-center hover:bg-accent transition-all cursor-pointer group/user overflow-hidden">
-                    {user.photoURL ? (
-                      <img src={user.photoURL} alt={user.displayName || ''} className="w-full h-full object-cover" />
+                  <button className="md:hidden w-8 h-8 rounded-lg bg-card border border-border flex items-center justify-center hover:bg-accent transition-all cursor-pointer group/user overflow-hidden">
+                    {user?.photoURL ? (
+                      <img src={user.photoURL} alt="" className="w-full h-full object-cover" />
                     ) : (
                       <User className="w-4 h-4 text-muted-foreground group-hover/user:text-foreground transition-colors" />
                     )}
                   </button>
                 </PopoverTrigger>
-                <PopoverContent className="w-64 bg-popover border-border p-4 rounded-xl shadow-xl">
+                <PopoverContent className="w-64 bg-popover border-border p-4 rounded-xl shadow-xl mr-4" align="end" sideOffset={10}>
                   <div className="flex flex-col gap-4">
                     <div className="flex items-center gap-3 p-2">
-                      <div className="w-10 h-10 rounded-lg overflow-hidden border border-border">
-                        <img src={user.photoURL || ''} alt="" className="w-full h-full object-cover" />
+                      <div className="w-10 h-10 rounded-lg overflow-hidden border border-border shrink-0 bg-muted">
+                        <img src={user?.photoURL || ''} alt="" className="w-full h-full object-cover" />
                       </div>
                       <div className="flex-1 min-w-0">
-                        <p className="text-foreground font-medium text-sm truncate">{user.displayName}</p>
-                        <p className="text-muted-foreground text-xs truncate">{user.email}</p>
+                        <p className="text-foreground font-medium text-sm truncate">{user?.displayName}</p>
+                        <p className="text-muted-foreground text-xs truncate">{user?.email}</p>
                       </div>
                     </div>
                     <Separator className="bg-muted" />
                     <Button 
                       variant="ghost" 
                       onClick={logout}
-                      className="w-full justify-start text-rose-500 hover:text-rose-500 dark:text-rose-400 hover:bg-rose-500/10 dark:bg-rose-400/10 rounded-lg h-10 font-medium text-xs"
+                      className="w-full justify-start text-rose-500 hover:text-rose-500 hover:bg-rose-500/10 rounded-lg h-10 font-medium text-xs"
                     >
                       <Trash2 className="w-4 h-4 mr-3" />
                       Sign Out
@@ -1198,11 +1570,10 @@ function AppContent() {
                 </PopoverContent>
               </Popover>
             </div>
-          </div>
-        </div>
-      </nav>
+          </header>
 
-      <div className="max-w-7xl mx-auto px-6 md:px-10 py-12 md:py-16 relative z-10">
+          <main className="flex-1 overflow-x-hidden overflow-y-auto w-full pb-24 md:pb-0 relative scroll-smooth group main-scrollable-container">
+            <div className="max-w-6xl mx-auto px-4 sm:px-6 md:px-10 py-8 md:py-12 relative z-10 w-full min-h-full flex flex-col">
         
         {activeView === 'list' ? (
           <>
@@ -1435,6 +1806,7 @@ function AppContent() {
                             variant="ghost" 
                             onClick={() => {
                               setSelectedService(null);
+                              setShowNotesField(false);
                               setEditingSub(null);
                             }} 
                             className="text-[10px] text-muted-foreground hover:text-foreground bg-muted hover:bg-accent rounded-lg px-4 h-8 font-medium border border-border"
@@ -1532,7 +1904,43 @@ function AppContent() {
                           </div>
                         </div>
 
-                        <div className="flex flex-col sm:flex-row gap-3 pt-6 border-t border-border">
+                        <div className="space-y-4 pt-6 border-t border-border">
+                          {showNotesField ? (
+                            <>
+                              <div className="flex items-center justify-between ml-1">
+                                <Label className="text-muted-foreground text-[10px] font-medium">Subscription Notes (Optional)</Label>
+                                <button 
+                                  type="button" 
+                                  onClick={() => {
+                                    setShowNotesField(false);
+                                    setValue('notes', '');
+                                  }} 
+                                  className="text-[10px] text-muted-foreground hover:text-red-500 transition-colors"
+                                >
+                                  Remove Note
+                                </button>
+                              </div>
+                              <textarea
+                                {...register('notes')}
+                                rows={3}
+                                className="w-full bg-card border border-border rounded-lg text-sm p-4 text-foreground placeholder-muted-foreground focus:outline-none focus:border-ring transition-all resize-none"
+                                placeholder="Add your notes here (e.g. Family sharing details, reminders...)"
+                              />
+                            </>
+                          ) : (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              onClick={() => setShowNotesField(true)}
+                              className="w-full h-10 border-dashed border-border text-muted-foreground hover:bg-accent hover:text-foreground transition-all"
+                            >
+                              <Plus className="w-3.5 h-3.5 mr-2" />
+                              Add Subscription Note
+                            </Button>
+                          )}
+                        </div>
+
+                        <div className="flex flex-col sm:flex-row gap-3 pt-6">
                           <Button 
                             type="submit" 
                             className="flex-[2] h-10 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 text-[11px] font-medium transition-all"
@@ -1545,6 +1953,7 @@ function AppContent() {
                               variant="outline" 
                               onClick={() => {
                                 setIsAddingInline(false);
+                                setShowNotesField(false);
                                 setEditingSub(null);
                                 setSelectedService(null);
                                 reset();
@@ -1558,15 +1967,17 @@ function AppContent() {
                                 type="button" 
                                 variant="outline" 
                                 onClick={() => {
-                                  removeSubscription(editingSub.id);
+                                  archiveSubscription(editingSub.id);
                                   setIsAddingInline(false);
+                                  setShowNotesField(false);
                                   setEditingSub(null);
                                   setSelectedService(null);
                                   reset();
                                 }} 
-                                className="w-10 h-10 rounded-lg bg-red-500/10 text-red-500 hover:bg-red-500 hover:text-foreground border border-red-500/20 transition-all flex items-center justify-center p-0"
+                                className="w-10 h-10 rounded-lg text-muted-foreground hover:text-primary border border-border hover:border-primary/50 transition-all flex items-center justify-center p-0"
+                                title="Move to Archive"
                               >
-                                <Trash2 className="w-4 h-4" />
+                                <Archive className="w-4 h-4" />
                               </Button>
                             )}
                           </div>
@@ -1636,6 +2047,31 @@ function AppContent() {
                             <Calendar className="w-2.5 h-2.5 text-muted-foreground" />
                             <span className="text-muted-foreground text-[10px] font-medium shrink-0 capitalize">{sub.billingCycle}</span>
                           </div>
+                          {sub.notes && (
+                            <>
+                              <span className="w-0.5 h-0.5 rounded-full bg-accent shrink-0" />
+                              <Popover>
+                                <PopoverTrigger 
+                                  className="flex items-center justify-center p-1 -m-1 rounded hover:bg-muted text-muted-foreground hover:text-primary transition-colors focus:outline-none"
+                                >
+                                  <StickyNote className="w-3 h-3" />
+                                </PopoverTrigger>
+                                <PopoverContent 
+                                  className="w-72 p-0 bg-popover border border-border rounded-xl shadow-2xl z-[100] overflow-hidden flex flex-col"
+                                >
+                                  <div className="flex items-center gap-2.5 px-4 py-3 bg-muted/40 border-b border-border/60">
+                                    <div className="w-6 h-6 rounded bg-primary/10 flex items-center justify-center border border-primary/20 shrink-0">
+                                      <StickyNote className="w-3 h-3 text-primary" />
+                                    </div>
+                                    <span className="text-xs font-semibold tracking-tight text-foreground">Subscription Note</span>
+                                  </div>
+                                  <div className="p-4 text-[13px] font-medium text-muted-foreground whitespace-pre-wrap break-words leading-relaxed text-left">
+                                    {sub.notes}
+                                  </div>
+                                </PopoverContent>
+                              </Popover>
+                            </>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -1670,25 +2106,25 @@ function AppContent() {
                         </Button>
                         <Popover>
                           <PopoverTrigger 
-                            className="w-8 h-8 rounded-md text-muted-foreground hover:text-red-500 dark:text-red-400 hover:bg-red-500/10 dark:bg-red-400/10 transition-all flex items-center justify-center"
+                            className="w-8 h-8 rounded-md text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all flex items-center justify-center relative z-20 cursor-pointer"
+                            title="Archive Subscription"
                           >
-                            <Trash2 className="w-3.5 h-3.5" />
+                            <Archive className="w-3.5 h-3.5" />
                           </PopoverTrigger>
-                          <PopoverContent className="bg-popover border-border text-foreground p-4 w-64 rounded-xl shadow-xl">
+                          <PopoverContent className="bg-popover border-border text-foreground p-4 w-64 rounded-xl shadow-xl z-50">
                             <div className="space-y-4">
                               <div className="space-y-1">
-                                <p className="text-sm font-medium text-foreground">Remove Subscription?</p>
-                                <p className="text-[11px] text-muted-foreground">This action will permanently disconnect this service.</p>
+                                <p className="text-sm font-medium text-foreground">Archive Service?</p>
+                                <p className="text-[11px] text-muted-foreground leading-relaxed">It will be moved to your Archive and stop appearing in active calculations, you can restore it anytime safely.</p>
                               </div>
                               <div className="flex gap-2">
                                 <Button variant="ghost" size="sm" className="flex-1 rounded-md h-8 text-[11px] font-medium text-muted-foreground hover:text-foreground border border-border">Cancel</Button>
                                 <Button 
-                                  variant="destructive" 
                                   size="sm" 
-                                  className="flex-1 rounded-md h-8 text-[11px] font-medium bg-red-500 text-foreground hover:bg-red-600"
-                                  onClick={() => removeSubscription(sub.id)}
+                                  className="flex-1 rounded-md h-8 text-[11px] font-medium bg-primary text-primary-foreground hover:bg-primary/90 cursor-pointer"
+                                  onClick={() => archiveSubscription(sub.id)}
                                 >
-                                  Delete
+                                  Archive
                                 </Button>
                               </div>
                             </div>
@@ -1720,173 +2156,348 @@ function AppContent() {
           </>
         ) : activeView === 'dashboard' ? (
           <motion.div 
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="space-y-12"
+            key="dashboard-view"
+            initial={{ opacity: 0, scale: 0.99 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ duration: 0.5 }}
+            className="w-full flex flex-col xl:flex-row gap-6 lg:gap-8 overflow-visible"
           >
-            {/* Stats Grid */}
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4">
-              {[
-                { label: 'Total Active', value: stats.count, icon: LayoutDashboard, color: 'text-blue-500 dark:text-blue-400', bg: 'bg-blue-500/10 dark:bg-blue-400/10' },
-                { label: 'Monthly Spend', value: `${currencySymbol}${Math.round(stats.monthly).toLocaleString()}`, icon: CreditCard, color: 'text-purple-500 dark:text-purple-400', bg: 'bg-purple-500/10 dark:bg-purple-400/10' },
-                { label: 'Yearly Spend', value: `${currencySymbol}${Math.round(stats.yearly).toLocaleString()}`, icon: Calendar, color: 'text-pink-500 dark:text-pink-400', bg: 'bg-pink-500/10 dark:bg-pink-400/10' },
-                { label: 'Avg. Monthly', value: `${currencySymbol}${Math.round(stats.monthly / (stats.count || 1)).toLocaleString()}`, icon: Activity, color: 'text-emerald-500 dark:text-emerald-400', bg: 'bg-emerald-500/10 dark:bg-emerald-400/10' },
-              ].map((stat, i) => (
-                <div key={i} className="bg-card p-4 md:p-5 rounded-lg border border-border relative overflow-hidden group hover:bg-accent transition-colors">
-                  <div className={cn("w-8 h-8 rounded-md flex items-center justify-center mb-4 border border-border", stat.bg)}>
-                    <stat.icon className={cn("w-4 h-4", stat.color)} />
-                  </div>
-                  <p className="text-muted-foreground text-[10px] uppercase tracking-widest font-medium mb-1">{stat.label}</p>
-                  <p className="text-xl md:text-2xl font-medium text-foreground tabular-nums tracking-tight">{stat.value}</p>
-                </div>
-              ))}
-            </div>
+            {/* Main Stats Column */}
+            <div className="flex-1 space-y-6 lg:space-y-8 min-w-0">
+              
+              {/* Top Analytical Ribbon */}
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                 {[
+                   { label: 'System Burn Rate', value: `${currencySymbol}${Math.round(stats.monthly).toLocaleString()}`, icon: Activity, desc: 'Cost per month' },
+                   { label: 'Next Cycle Load', value: `${currencySymbol}${Math.round(dailyProjectionData.find(d => d.amount > 0)?.amount || 0).toLocaleString()}`, icon: TrendingDown, desc: 'Next pay interval' },
+                   { label: 'Health Score', value: `${financialHealthScore}%`, icon: Zap, color: financialHealthScore > 70 ? 'text-emerald-500' : financialHealthScore > 40 ? 'text-amber-500' : 'text-rose-500', desc: 'System stability' },
+                   { label: 'Total Yearly Load', value: `${currencySymbol}${Math.round(stats.yearly).toLocaleString()}`, icon: Globe, desc: 'Annual projected' },
+                 ].map((s, i) => (
+                   <div key={i} className="bg-card/50 border border-border/80 rounded-2xl p-4 flex flex-col justify-between shadow-sm relative group overflow-hidden">
+                      <div className="absolute inset-0 bg-gradient-to-br from-primary/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" />
+                      <div className="relative z-10">
+                        <div className="flex items-center justify-between mb-2">
+                          <p className="text-[10px] text-muted-foreground uppercase font-bold tracking-widest">{s.label}</p>
+                          <s.icon className={cn("w-3.5 h-3.5", s.color || "text-muted-foreground/60")} />
+                        </div>
+                        <p className={cn("text-xl font-bold tracking-tight text-foreground", s.color)}>{s.value}</p>
+                        <p className="text-[10px] text-muted-foreground font-medium mt-1 truncate">{s.desc}</p>
+                      </div>
+                   </div>
+                 ))}
+              </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 md:gap-6">
-              {/* Spending Overview Chart */}
-              <div className="bg-card rounded-xl p-5 md:p-6 border border-border relative overflow-hidden">
-                <h3 className="text-sm md:text-base font-medium text-foreground mb-6 md:mb-8 tracking-tight flex items-center gap-2">
-                  <Activity className="w-4 h-4 text-primary" />
-                  Category Distribution
-                </h3>
-                <div className="h-[300px] md:h-[350px] w-full">
+              {/* Main Visualization: Cashflow Projection AREA */}
+              <div className="bg-card border border-border/80 rounded-3xl p-6 lg:p-8 flex flex-col shadow-sm relative overflow-hidden group">
+                <div className="absolute top-0 right-0 w-32 h-32 bg-primary/2 rounded-full blur-3xl -mr-16 -mt-16 pointer-events-none group-hover:bg-primary/5 transition-all duration-1000" />
+                
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
+                   <div>
+                     <h3 className="text-foreground font-bold text-lg tracking-tight">Financial Timeline Analysis</h3>
+                     <p className="text-[10px] text-muted-foreground font-bold uppercase tracking-[0.2em] mt-1 opacity-60">Estimated daily burn rate & sequence</p>
+                   </div>
+                   <div className="flex items-center gap-1.5 px-3 py-1.5 bg-accent/50 rounded-lg border border-border text-[11px] font-bold text-foreground">
+                      <div className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
+                      Monthly Cycle Projection
+                   </div>
+                </div>
+
+                <div className="h-[280px] w-full">
                   <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie
-                        data={categoryData}
-                        cx="50%"
-                        cy="50%"
-                        innerRadius={80}
-                        outerRadius={120}
-                        paddingAngle={5}
-                        dataKey="value"
-                      >
-                        {categoryData.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} stroke="none" />
-                        ))}
-                      </Pie>
-                      <RechartsTooltip 
-                        contentStyle={{ 
-                          backgroundColor: theme === 'dark' ? '#0f172a' : '#ffffff', 
-                          border: theme === 'dark' ? '1px solid rgba(255,255,255,0.1)' : '1px solid rgba(0,0,0,0.1)',
-                          borderRadius: '16px',
-                          color: theme === 'dark' ? '#fff' : '#000'
-                        }}
-                        itemStyle={{ color: theme === 'dark' ? '#fff' : '#000' }}
+                    <AreaChart data={dailyProjectionData}>
+                      <defs>
+                        <linearGradient id="colorAmount" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="var(--primary)" stopOpacity={0.12}/>
+                          <stop offset="95%" stopColor="var(--primary)" stopOpacity={0}/>
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={theme === 'dark' ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.03)'} />
+                      <XAxis 
+                        dataKey="date" 
+                        axisLine={false} 
+                        tickLine={false} 
+                        tick={{ fill: 'currentColor', fontSize: 9, fontWeight: 700, opacity: 0.4 }} 
+                        interval={4} 
                       />
-                      <Legend verticalAlign="bottom" height={36}/>
-                    </PieChart>
+                      <YAxis hide domain={[0, 'auto']} />
+                      <RechartsTooltip 
+                        contentStyle={{ backgroundColor: theme === 'dark' ? '#0f172a' : '#fff', border: '1px solid var(--border)', borderRadius: '16px', fontSize: '11px', fontWeight: 800, padding: '12px', boxShadow: '0 20px 40px rgba(0,0,0,0.1)' }}
+                        itemStyle={{ color: 'var(--primary)' }}
+                        formatter={(val: number) => [`${currencySymbol}${val}`, 'Load']}
+                      />
+                      <Area 
+                        type="monotone" 
+                        dataKey="amount" 
+                        stroke="var(--primary)" 
+                        strokeWidth={4} 
+                        fillOpacity={1} 
+                        fill="url(#colorAmount)" 
+                        animationDuration={2000}
+                        dot={{ r: 0 }}
+                        activeDot={{ r: 6, stroke: 'var(--background)', strokeWidth: 3, fill: 'var(--primary)' }}
+                      />
+                    </AreaChart>
                   </ResponsiveContainer>
                 </div>
               </div>
 
-              {/* Budget Summary */}
-              <div className="bg-card rounded-xl p-5 md:p-6 border border-border relative overflow-hidden flex flex-col justify-between">
-                <div>
-                  <h3 className="text-sm md:text-base font-medium text-foreground mb-6 md:mb-8 tracking-tight flex items-center gap-2">
-                    <CreditCard className="w-4 h-4 text-primary" />
-                    Budget Summary
-                  </h3>
-                  <div className="space-y-4 md:space-y-5">
-                    <div className="p-4 md:p-5 rounded-lg bg-card border border-border">
-                      <div className="flex items-center justify-between mb-4">
-                        <div>
-                          <p className="text-muted-foreground text-[10px] uppercase tracking-widest font-medium mb-1">Monthly Budget Limit</p>
-                          <div className="flex items-center gap-2">
-                            <span className="text-foreground text-sm font-medium">{currencySymbol}</span>
-                            <input 
-                              type="number" 
-                              value={budgetGoal}
-                              onChange={(e) => setBudgetGoal(Number(e.target.value))}
-                              className="bg-transparent text-xl md:text-2xl font-medium text-foreground w-32 focus:outline-none border-b border-border focus:border-primary transition-all tabular-nums"
-                            />
-                          </div>
-                        </div>
-                        <div className="w-10 h-10 rounded-md bg-primary/10 flex items-center justify-center border border-primary/20">
-                          <Target className="w-5 h-5 text-primary" />
-                        </div>
-                      </div>
-                      
-                      <div className="space-y-2">
-                        <div className="flex justify-between text-[10px] uppercase tracking-widest font-medium">
-                          <span className="text-muted-foreground">Usage</span>
-                          <span className={cn(
-                            stats.monthly > budgetGoal ? "text-rose-500" : "text-emerald-500"
-                          )}>
-                            {Math.round((stats.monthly / (budgetGoal || 1)) * 100)}%
-                          </span>
-                        </div>
-                        <div className="h-1.5 w-full bg-muted rounded-full overflow-hidden">
-                          <motion.div 
-                            initial={{ width: 0 }}
-                            animate={{ width: `${Math.min((stats.monthly / (budgetGoal || 1)) * 100, 100)}%` }}
-                            className={cn(
-                              "h-full transition-all duration-1000",
-                              stats.monthly > budgetGoal ? "bg-rose-500" : "bg-emerald-500"
-                            )}
-                          />
-                        </div>
-                        <p className="text-[10px] text-muted-foreground">
-                          {stats.monthly > budgetGoal 
-                            ? `Over budget by ${currencySymbol}${Math.round(stats.monthly - budgetGoal)}` 
-                            : `Under budget by ${currencySymbol}${Math.round(budgetGoal - stats.monthly)}`}
-                        </p>
-                      </div>
+              {/* Optimization and Stability Hub */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                
+                {/* Savings Focus */}
+                <div className="bg-card/40 border border-border/80 rounded-3xl p-6 relative overflow-hidden group">
+                  <div className="flex items-center gap-3 mb-8">
+                    <div className="w-9 h-9 rounded-xl bg-primary/10 flex items-center justify-center border border-primary/20">
+                      <Sparkles className="w-4 h-4 text-primary" />
                     </div>
-
-                    <div className="flex items-center justify-between p-4 md:p-5 rounded-lg bg-card border border-border">
-                      <div>
-                        <p className="text-muted-foreground text-[10px] uppercase tracking-widest font-medium mb-1">Yearly Projection</p>
-                        <p className="text-xl md:text-2xl font-medium text-foreground tabular-nums tracking-tight">{currencySymbol}{Math.round(stats.yearly).toLocaleString()}</p>
-                      </div>
-                      <div className="w-10 h-10 rounded-md bg-purple-500/10 flex items-center justify-center border border-purple-500/20">
-                        <Calendar className="w-5 h-5 text-purple-500" />
-                      </div>
+                    <div>
+                      <h4 className="text-[13px] font-bold text-foreground font-sans">Cost Optimization</h4>
+                      <p className="text-[9px] text-muted-foreground uppercase font-bold tracking-widest">Efficiency Engine</p>
                     </div>
                   </div>
+
+                  <div className="space-y-4">
+                    {savingsInsights.length > 0 ? (
+                      <>
+                        <p className="text-[12px] text-muted-foreground leading-relaxed font-medium">
+                          System detected potential <span className="text-emerald-500 font-bold">{currencySymbol}{Math.round(savingsInsights.reduce((a,b)=>a+b.potentialSaving, 0)).toLocaleString()}/yr</span> savings by consolidating monthly fees to annual logic.
+                        </p>
+                        <div className="space-y-2 mt-4">
+                           {savingsInsights.map(sub => (
+                             <div key={`insight-${sub.id}`} className="flex items-center justify-between p-3 rounded-2xl bg-muted/20 border border-border/50 hover:bg-muted/40 transition-colors">
+                               <div className="flex items-center gap-3">
+                                 <div className="w-7 h-7 rounded-lg overflow-hidden border border-border bg-background p-1.5 shrink-0">
+                                   <ServiceLogo name={sub.serviceName} domain={sub.domain} slug={sub.slug} color={sub.color} className="w-full h-full" />
+                                 </div>
+                                 <span className="text-[11px] font-bold text-foreground">{sub.serviceName}</span>
+                               </div>
+                               <span className="text-[10px] font-bold text-emerald-500 bg-emerald-500/10 px-2 py-0.5 rounded-md">-{currencySymbol}{Math.round(sub.potentialSaving)}</span>
+                             </div>
+                           ))}
+                        </div>
+                      </>
+                    ) : (
+                      <p className="text-xs text-muted-foreground text-center py-6">Your stack is optimized.</p>
+                    )}
+                  </div>
                 </div>
-                <div className="mt-4 md:mt-5 p-4 md:p-5 rounded-lg bg-primary/5 border border-primary/10">
-                  <p className="text-primary text-[10px] font-medium uppercase tracking-widest mb-2">Optimization Tip</p>
-                  <p className="text-muted-foreground text-xs leading-relaxed">
-                    You have <span className="text-foreground font-medium">{stats.count}</span> active subscriptions. 
-                    Switching {subscriptions.filter(s => s.billingCycle === 'monthly').length} monthly plans to yearly could save you up to 20% on average.
-                  </p>
+
+                {/* System Stability HUD */}
+                <div className="bg-card/40 border border-border/80 rounded-3xl p-6 flex flex-col justify-between group">
+                   <div className="flex items-center justify-between mb-8">
+                      <div>
+                        <h4 className="text-[13px] font-bold text-foreground font-sans">Node Health</h4>
+                        <p className="text-[9px] text-muted-foreground uppercase font-bold tracking-widest">Resource Monitoring</p>
+                      </div>
+                      <div className={cn(
+                        "text-[9px] font-black px-2 py-0.5 rounded-md border",
+                        financialHealthScore > 70 ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/30" : 
+                        financialHealthScore > 40 ? "bg-amber-500/10 text-amber-500 border-amber-500/30" : 
+                        "bg-rose-500/10 text-rose-500 border-rose-500/30"
+                      )}>
+                        {financialHealthScore > 70 ? 'STABLE' : financialHealthScore > 40 ? 'WARNING' : 'CRITICAL'}
+                      </div>
+                   </div>
+
+                   <div className="relative h-32 w-full flex items-center justify-center">
+                      <div className="absolute inset-x-0 bottom-0 top-[20%] flex flex-col items-center justify-center">
+                         <span className="text-3xl font-black tracking-tight text-foreground">{financialHealthScore}%</span>
+                         <div className="flex items-center gap-2 mt-1">
+                            <Activity className={cn("w-3 h-3", financialHealthScore > 70 ? "text-emerald-500" : "text-rose-500")} />
+                            <span className="text-[9px] text-muted-foreground uppercase font-black tracking-[0.2em]">Efficiency Range</span>
+                         </div>
+                      </div>
+                      <svg className="w-40 h-40 -rotate-90">
+                         <circle cx="80" cy="80" r="64" stroke="currentColor" strokeWidth="10" fill="transparent" className="text-muted/10" />
+                         <motion.circle 
+                           cx="80" cy="80" r="64" stroke="currentColor" strokeWidth="10" fill="transparent" strokeLinecap="round" 
+                           className={cn(financialHealthScore > 70 ? "text-emerald-500" : financialHealthScore > 40 ? "text-amber-500" : "text-rose-500")}
+                           initial={{ strokeDasharray: "0, 402" }}
+                           animate={{ strokeDasharray: `${(financialHealthScore / 100) * 402}, 402` }}
+                           transition={{ duration: 2, ease: "circOut" }}
+                         />
+                      </svg>
+                   </div>
                 </div>
               </div>
+
             </div>
 
-            {/* Top Subscriptions by Cost */}
-            <div className="bg-card rounded-xl p-5 md:p-6 border border-border">
-              <h3 className="text-sm md:text-base font-medium text-foreground mb-6 md:mb-8 tracking-tight flex items-center gap-2">
-                <TrendingDown className="w-4 h-4 text-primary" />
-                Highest Cost Subscriptions
-              </h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6">
-                {[...subscriptions]
-                  .sort((a, b) => convertToDisplay(b.amount, b.currency) - convertToDisplay(a.amount, a.currency))
-                  .slice(0, 6)
-                  .map(sub => (
-                    <div key={sub.id} className="flex items-center gap-3 p-3 rounded-lg bg-card border border-border hover:bg-accent transition-colors group">
-                      <div className="w-10 h-10 rounded-md bg-muted flex items-center justify-center p-2 border border-border">
-                        <ServiceLogo 
-                          name={sub.serviceName}
-                          domain={sub.domain}
-                          slug={sub.slug}
-                          color={sub.color}
-                          className="w-full h-full"
-                        />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-foreground font-medium truncate text-sm">{sub.serviceName}</p>
-                        <p className="text-muted-foreground text-[10px] uppercase tracking-widest font-medium">{sub.planName}</p>
-                      </div>
-                      <div className="text-right">
-                        <p className="text-foreground font-medium tabular-nums text-sm">{currencySymbol}{Math.round(convertToDisplay(sub.amount, sub.currency))}</p>
-                        <p className="text-muted-foreground text-[10px] uppercase tracking-widest font-medium">{sub.billingCycle}</p>
-                      </div>
+            {/* Tactical Sidebar / Digital HUD */}
+            <div className="xl:w-[350px] shrink-0 space-y-6 lg:space-y-8 min-w-0">
+               
+               {/* --- DIGITAL TOKEN HUD (REFINED) --- */}
+               <div className="bg-card/60 backdrop-blur-3xl border-2 border-primary/20 rounded-[32px] p-6 shadow-2xl relative overflow-hidden group">
+                  <div className="absolute -top-12 -right-12 w-32 h-32 bg-primary/10 rounded-full blur-[40px] pointer-events-none group-hover:scale-125 transition-transform duration-1000" />
+                  
+                  <div className="relative z-10">
+                    <div className="flex items-center justify-between mb-8">
+                       <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 rounded-[14px] bg-primary flex items-center justify-center shadow-lg shadow-primary/20">
+                             <Coins className="w-5 h-5 text-primary-foreground" />
+                          </div>
+                          <div>
+                            <h3 className="text-foreground font-black text-sm tracking-tight leading-none uppercase">Budget Wallet</h3>
+                            <p className="text-[9px] text-muted-foreground font-black tracking-widest mt-1 opacity-70 uppercase">Financial Token HUD</p>
+                          </div>
+                       </div>
+                       {!isEditingCap ? (
+                         <button onClick={() => setIsEditingCap(true)} className="w-8 h-8 rounded-full bg-accent hover:bg-muted border border-border flex items-center justify-center transition-colors">
+                            <Edit3 className="w-3.5 h-3.5 text-muted-foreground" />
+                         </button>
+                       ) : (
+                         <button onClick={() => {
+                            setBudgetGoal(tempBudget);
+                            setIsEditingCap(false);
+                         }} className="w-8 h-8 rounded-full bg-primary hover:bg-primary/90 border border-primary/20 flex items-center justify-center transition-colors">
+                            <Check className="w-4 h-4 text-primary-foreground" />
+                         </button>
+                       )}
                     </div>
-                  ))}
-              </div>
+
+                    <div className="space-y-6">
+                        <div className="p-5 rounded-2xl bg-background/40 border border-border/80 backdrop-blur-md">
+                           <div className="flex items-center justify-between mb-4">
+                              <p className="text-[10px] text-muted-foreground font-black uppercase tracking-[0.2em]">Available Credits</p>
+                              {isEditingCap && (
+                                <motion.div initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} className="flex items-center gap-1.5 bg-background border border-border rounded-lg px-2 py-0.5">
+                                   <span className="text-[10px] font-bold text-muted-foreground">{currencySymbol}</span>
+                                   <input 
+                                     autoFocus
+                                     type="number" 
+                                     value={tempBudget} 
+                                     onChange={(e) => setTempBudget(Number(e.target.value))}
+                                     onKeyDown={(e) => { if(e.key === 'Enter') { setBudgetGoal(tempBudget); setIsEditingCap(false); } }}
+                                     className="bg-transparent border-none p-0 text-[11px] font-black text-foreground w-16 focus:ring-0 outline-none tabular-nums"
+                                   />
+                                </motion.div>
+                              )}
+                           </div>
+                           <div className="flex items-baseline justify-between gap-2">
+                              <span className="text-3xl font-black text-foreground tabular-nums tracking-tighter">
+                                {currencySymbol}{Math.max(0, Math.round(budgetGoal - stats.monthly)).toLocaleString()}
+                              </span>
+                              <div className={cn(
+                                "flex items-center gap-1.5 px-2 py-0.5 rounded-md border text-[10px] font-black uppercase tracking-widest",
+                                stats.monthly > budgetGoal ? "bg-rose-500/10 text-rose-500 border-rose-500/20" : "bg-emerald-500/10 text-emerald-500 border-emerald-500/20"
+                              )}>
+                                <span>{stats.monthly > budgetGoal ? 'Exceeded' : 'Active'}</span>
+                              </div>
+                           </div>
+
+                           {/* Dynamic usage bar colors: Green -> Amber -> Rose */}
+                           {(() => {
+                              const usage = (stats.monthly / (budgetGoal || 1)) * 100;
+                              const barColor = usage > 90 ? "bg-rose-500" : usage > 70 ? "bg-amber-500" : "bg-primary";
+                              return (
+                                <div className="h-1.5 w-full bg-muted/40 rounded-full overflow-hidden mt-5 relative">
+                                  <motion.div 
+                                    initial={{ width: 0 }}
+                                    animate={{ width: `${Math.min(usage, 100)}%` }}
+                                    className={cn("h-full transition-all duration-1000", barColor)}
+                                  />
+                                </div>
+                              );
+                           })()}
+
+                           <div className="flex justify-between items-center mt-3">
+                              <span className="text-[9px] text-muted-foreground font-bold uppercase tracking-widest opacity-60">Usage: {Math.round((stats.monthly / (budgetGoal || 1)) * 100)}%</span>
+                              <span className="text-[9px] font-bold text-foreground/80 uppercase tracking-widest">Cap: {currencySymbol}{budgetGoal.toLocaleString()}</span>
+                           </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3">
+                           <div className="p-4 rounded-2xl border border-border/50 bg-background/20">
+                              <p className="text-[8px] text-muted-foreground font-black uppercase tracking-widest mb-1">Burn Rate</p>
+                              <p className="text-[13px] font-black text-foreground">{currencySymbol}{Math.round(stats.monthly / 30).toLocaleString()}<span className="text-[9px] text-muted-foreground ml-1">/D</span></p>
+                           </div>
+                           <div className="p-4 rounded-2xl border border-border/50 bg-background/20">
+                              <p className="text-[8px] text-muted-foreground font-black uppercase tracking-widest mb-1">Stack Size</p>
+                              <p className="text-[13px] font-black text-foreground">{stats.count}<span className="text-[9px] text-muted-foreground ml-1">Nodes</span></p>
+                           </div>
+                        </div>
+                    </div>
+                  </div>
+               </div>
+
+               {/* Allocation Focus */}
+               <div className="bg-card/60 backdrop-blur-xl border border-border/80 rounded-3xl p-6 shadow-sm">
+                  <h3 className="text-foreground font-black text-sm tracking-tight mb-8 flex items-center justify-between uppercase">
+                    Node Allocation
+                    <Globe className="w-4 h-4 text-muted-foreground/30" />
+                  </h3>
+                  <div className="h-[180px] w-full relative">
+                    <div className="absolute inset-0 flex items-center justify-center pt-2">
+                       <p className="text-[10px] font-black text-muted-foreground uppercase tracking-widest opacity-40">{categoryData.length} Points</p>
+                    </div>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={categoryData}
+                          innerRadius={60}
+                          outerRadius={80}
+                          paddingAngle={6}
+                          dataKey="value"
+                          stroke="none"
+                        >
+                          {categoryData.map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                          ))}
+                        </Pie>
+                        <RechartsTooltip 
+                          contentStyle={{ backgroundColor: theme === 'dark' ? '#0f172a' : '#fff', border: 'none', borderRadius: '14px', fontSize: '10px', boxShadow: '0 10px 25px rgba(0,0,0,0.2)' }}
+                        />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+               </div>
+
+               {/* Chronological Sequence Queue */}
+               <div className="bg-card/60 backdrop-blur-xl border border-border/80 rounded-[32px] p-6 shadow-sm relative overflow-hidden">
+                  <div className="flex items-center justify-between mb-8">
+                    <div>
+                      <h3 className="text-foreground font-black text-sm tracking-tight uppercase">Timeline Hub</h3>
+                      <p className="text-[9px] text-muted-foreground font-black uppercase tracking-widest mt-1 opacity-50">Operation Sequence</p>
+                    </div>
+                    <Calendar className="w-4 h-4 text-primary" />
+                  </div>
+                  
+                  <div className="space-y-6">
+                    {subscriptions.filter(s => s.nextBillingDate).length > 0 ? (
+                      [...subscriptions]
+                        .filter(s => s.nextBillingDate)
+                        .sort((a,b) => new Date(a.nextBillingDate!).getTime() - new Date(b.nextBillingDate!).getTime())
+                        .slice(0, 5)
+                        .map((sub, i) => {
+                          const nextDate = parseISO(sub.nextBillingDate!);
+                          const isToday = nextDate.toDateString() === new Date().toDateString();
+                          return (
+                            <div key={`queue-${sub.id}`} className="flex items-start gap-4 group">
+                               <div className="flex flex-col items-center gap-1.5 mt-1 shrink-0">
+                                  <div className={cn("w-2 h-2 rounded-full border-2 border-card shadow-lg", isToday ? "bg-rose-500 scale-[1.5]" : "bg-primary/60")} />
+                                  {i < 4 && <div className="w-[1.5px] h-10 bg-gradient-to-b from-primary/10 to-transparent" />}
+                               </div>
+                               <div className="flex-1 -mt-1 pb-4">
+                                  <div className="flex justify-between items-start mb-1">
+                                     <p className="text-[12px] font-black text-foreground tracking-tight">{sub.serviceName}</p>
+                                     <span className="text-[11px] font-black text-foreground tabular-nums">-{currencySymbol}{Math.round(convertToDisplay(sub.amount, sub.currency))}</span>
+                                  </div>
+                                  <p className="text-[10px] text-muted-foreground font-black uppercase tracking-widest opacity-60">
+                                     {isToday ? 'CRITICAL: DUE TODAY' : format(nextDate, 'MMMM dd')}
+                                  </p>
+                               </div>
+                            </div>
+                          );
+                        })
+                    ) : (
+                      <p className="text-xs text-muted-foreground text-center py-10">Empty Sequence.</p>
+                    )}
+                  </div>
+                  
+                  <button onClick={() => setActiveView('calendar')} className="w-full mt-4 py-3.5 rounded-2xl bg-background/40 border border-border/50 text-[10px] font-black uppercase tracking-[0.3em] text-muted-foreground hover:bg-muted/80 transition-all hover:text-foreground">
+                     Access Network Calendar
+                  </button>
+               </div>
             </div>
           </motion.div>
         ) : activeView === 'calendar' ? (
@@ -1898,19 +2509,178 @@ function AppContent() {
           >
             <CalendarView subscriptions={subscriptions} convertToDisplay={convertToDisplay} displayCurrency={displayCurrency} />
           </motion.div>
+        ) : activeView === 'archive' ? (
+          <motion.div
+            key="archive"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
+          >
+            <div className="mb-12">
+              <h2 className="text-3xl font-semibold tracking-tight text-foreground flex items-center gap-3">
+                <Archive className="w-8 h-8 text-primary" />
+                Archived Subscriptions
+              </h2>
+              <p className="text-sm text-muted-foreground mt-2 max-w-xl leading-relaxed">
+                Subscriptions here are paused and do not count towards your monthly or yearly spending.
+              </p>
+            </div>
+            
+            {archivedSubscriptions.length === 0 ? (
+              <div className="bg-card/30 border border-border/40 backdrop-blur-xl rounded-3xl p-16 flex flex-col items-center justify-center text-center">
+                <div className="w-20 h-20 bg-muted/30 rounded-full flex items-center justify-center mb-6">
+                  <Archive className="w-8 h-8 text-muted-foreground/50 mx-auto" />
+                </div>
+                <h3 className="text-xl font-medium text-foreground mb-3">Your archive is empty</h3>
+                <p className="text-sm text-muted-foreground/80 max-w-md mx-auto leading-relaxed">
+                  When you no longer use a service but want to keep its history securely, archive it. It will safely stay here.
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 xl:gap-5 auto-rows-max">
+                {archivedSubscriptions.map((sub, i) => (
+                  <motion.div
+                    key={sub.id}
+                    initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    transition={{ duration: 0.4, delay: i * 0.05, ease: [0.16, 1, 0.3, 1] }}
+                    className="group relative"
+                  >
+                    <div className="absolute inset-0 bg-gradient-to-br from-primary/5 to-transparent rounded-[20px] blur-xl opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
+                    <div className="relative bg-card rounded-[20px] border border-border p-5 flex flex-col h-full opacity-60 hover:opacity-100 transition-all duration-300 pointer-events-auto">
+                      
+                      <div className="flex items-center gap-4 mb-4">
+                        <div className="w-12 h-12 rounded-[14px] overflow-hidden bg-card border border-border shrink-0 flex items-center justify-center p-2.5 grayscale hover:grayscale-0 transition-all">
+                          <ServiceLogo 
+                            name={sub.serviceName}
+                            domain={sub.domain}
+                            slug={sub.slug}
+                            color={sub.color}
+                            className="w-full h-full object-contain"
+                          />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <h3 className="text-base font-semibold text-foreground truncate">{sub.serviceName}</h3>
+                          <div className="flex items-center gap-2 mt-0.5">
+                            <Badge variant="outline" className="px-1.5 py-0 text-[10px] font-medium border-border/50 text-muted-foreground">
+                              {sub.category}
+                            </Badge>
+                          </div>
+                        </div>
+                      </div>
+                      
+                      <div className="mt-auto">
+                        <div className="flex items-baseline gap-1 mt-4">
+                          <span className="text-xl font-bold text-foreground tabular-nums tracking-tight">
+                            {displayCurrency === 'USD' ? '$' : displayCurrency === 'EUR' ? '€' : displayCurrency === 'GBP' ? '£' : displayCurrency}{Math.round(convertToDisplay(sub.amount, sub.currency))}
+                          </span>
+                          <span className="text-[11px] font-medium text-muted-foreground uppercase opacity-80">
+                            /{sub.billingCycle === 'monthly' ? 'mo' : 'yr'}
+                          </span>
+                        </div>
+                      </div>
+                      
+                      <div className="absolute top-4 right-4 flex flex-col items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-auto">
+                        <button
+                          onClick={() => restoreSubscription(sub.id)}
+                          className="w-8 h-8 rounded-md text-emerald-500 hover:bg-emerald-500/10 transition-all flex items-center justify-center relative z-20 cursor-pointer"
+                          title="Restore to Active"
+                        >
+                          <ArchiveRestore className="w-4 h-4" />
+                        </button>
+                        <Popover>
+                          <PopoverTrigger 
+                            className="w-8 h-8 rounded-md text-red-500 hover:text-red-600 hover:bg-red-500/10 transition-all flex items-center justify-center relative z-20 cursor-pointer"
+                            title="Permanent Delete"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </PopoverTrigger>
+                          <PopoverContent className="bg-popover border-border text-foreground p-4 w-64 rounded-xl shadow-xl z-[100] mr-4">
+                            <div className="space-y-4">
+                              <div className="space-y-1">
+                                <p className="font-semibold text-sm">Permanent Delete</p>
+                                <p className="text-[11px] text-muted-foreground">This action cannot be undone. Data will be completely erased.</p>
+                              </div>
+                              <div className="flex gap-2">
+                                <Button variant="ghost" size="sm" className="flex-1 rounded-md h-8 text-[11px] font-medium text-muted-foreground hover:text-foreground border border-border">Cancel</Button>
+                                <Button 
+                                  variant="destructive" 
+                                  size="sm" 
+                                  className="flex-1 rounded-md h-8 text-[11px] font-medium bg-red-500 text-foreground hover:bg-red-600 cursor-pointer"
+                                  onClick={() => removeSubscription(sub.id)}
+                                >
+                                  Delete
+                                </Button>
+                              </div>
+                            </div>
+                          </PopoverContent>
+                        </Popover>
+                      </div>
+
+                    </div>
+                  </motion.div>
+                ))}
+              </div>
+            )}
+          </motion.div>
         ) : null}
 
-        <footer className="mt-32 text-center pb-12 border-t border-border pt-12">
-          <div className="flex items-center justify-center gap-4 mb-6">
-            <div className="w-1.5 h-1.5 rounded-full bg-primary shadow-[0_0_10px_rgba(59,130,246,0.5)]" />
-            <div className="w-1.5 h-1.5 rounded-full bg-accent" />
-            <div className="w-1.5 h-1.5 rounded-full bg-accent" />
+        <footer className="mt-auto border-t border-border pt-8 pb-8 md:pb-12 w-full shrink-0">
+          <div className="flex flex-col md:flex-row items-center justify-between gap-6 px-4 md:px-8">
+            <div className="flex items-center gap-2.5 opacity-60 hover:opacity-100 transition-opacity">
+              <BrandLogo className="w-5 h-5 grayscale" />
+              <p className="text-[11px] font-medium text-foreground tracking-widest uppercase">
+                Subtract &copy; 2026
+              </p>
+            </div>
+            
+            <div className="flex flex-col md:flex-row items-center gap-4">
+              <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-widest">
+                Designed by <span className="text-foreground">Ahmed Kilany</span>
+              </span>
+              
+              <div className="h-4 w-px bg-border hidden md:block" />
+              
+              <div className="flex items-center gap-3">
+                <a href="#" className="w-7 h-7 rounded bg-muted/50 border border-border flex items-center justify-center text-muted-foreground hover:text-blue-500 hover:bg-blue-500/10 hover:border-blue-500/20 transition-all" title="Facebook">
+                  <Facebook className="w-3.5 h-3.5" />
+                </a>
+                <a href="#" className="w-7 h-7 rounded bg-muted/50 border border-border flex items-center justify-center text-muted-foreground hover:text-pink-500 hover:bg-pink-500/10 hover:border-pink-500/20 transition-all" title="Instagram">
+                  <Instagram className="w-3.5 h-3.5" />
+                </a>
+                <a href="#" className="w-7 h-7 rounded bg-muted/50 border border-border flex items-center justify-center text-muted-foreground hover:text-blue-400 hover:bg-blue-400/10 hover:border-blue-400/20 transition-all" title="LinkedIn">
+                  <Linkedin className="w-3.5 h-3.5" />
+                </a>
+              </div>
+            </div>
           </div>
-          <p className="text-muted-foreground text-[10px] md:text-[11px] uppercase tracking-[0.4em] font-medium">
-            Subtract &copy; 2026 &bull; Coded by Ahmed Kilany
-          </p>
         </footer>
-      </div>
-    </div>
-  );
+            </div>
+          </main>
+          
+          {/* Mobile Bottom Navigation Layout */}
+          <div className="md:hidden fixed bottom-0 left-0 right-0 h-[70px] bg-background/90 backdrop-blur-3xl border-t border-border z-50 flex items-center justify-around px-2 pb-safe shadow-[0_-10px_40px_rgba(0,0,0,0.5)] dark:shadow-[0_-20px_40px_rgba(0,0,0,1)]">
+            <button onClick={() => setActiveView('list')} className={cn("flex flex-col items-center justify-center gap-1.5 w-16 h-full transition-colors", activeView === 'list' ? "text-primary scale-105" : "text-muted-foreground hover:text-foreground")}>
+              <LayoutDashboard className="w-5 h-5 mb-0.5" />
+              <span className="text-[10px] font-medium tracking-tight">List</span>
+            </button>
+            <button onClick={() => setActiveView('dashboard')} className={cn("flex flex-col items-center justify-center gap-1.5 w-16 h-full transition-colors", activeView === 'dashboard' ? "text-primary scale-105" : "text-muted-foreground hover:text-foreground")}>
+              <Activity className="w-5 h-5 mb-0.5" />
+              <span className="text-[10px] font-medium tracking-tight">Analytics</span>
+            </button>
+            <button onClick={() => setActiveView('calendar')} className={cn("flex flex-col items-center justify-center gap-1.5 w-16 h-full transition-colors", activeView === 'calendar' ? "text-primary scale-105" : "text-muted-foreground hover:text-foreground")}>
+              <Calendar className="w-5 h-5 mb-0.5" />
+              <span className="text-[10px] font-medium tracking-tight">Calendar</span>
+            </button>
+            <button onClick={() => setActiveView('archive')} className={cn("flex flex-col items-center justify-center gap-1.5 w-16 h-full transition-colors", activeView === 'archive' ? "text-primary scale-105" : "text-muted-foreground hover:text-foreground")}>
+              <Archive className="w-5 h-5 mb-0.5" />
+              <span className="text-[10px] font-medium tracking-tight">Archive</span>
+            </button>
+          </div>
+        </div>
+      </motion.div>
+    );
+  }
+
+  return <AnimatePresence mode="wait">{content}</AnimatePresence>;
 }
